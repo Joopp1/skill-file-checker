@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- No network access: this page cannot load or send anything. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; form-action 'none'; base-uri 'none'">
+<meta name="referrer" content="no-referrer">
+<title>Skill File Checker</title>
+<style>
+  :root { --ink:#1d2330; --muted:#5b6475; --line:#d9dee7; --bg:#f7f8fa; --high:#b42318; --med:#b54708; --low:#175cd3; --ok:#067647; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; color:var(--ink); background:var(--bg); }
+  main { max-width:860px; margin:0 auto; padding:32px 20px 64px; }
+  h1 { font-size:28px; margin:0 0 6px; }
+  h2 { font-size:20px; margin:28px 0 10px; }
+  p.lead { color:var(--muted); margin:0 0 18px; }
+  .note { background:#fff; border:1px solid var(--line); border-radius:8px; padding:12px 14px; font-size:14px; color:var(--muted); }
+  textarea { width:100%; min-height:220px; padding:12px; border:1px solid var(--line); border-radius:8px; font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; background:#fff; }
+  .row { display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin:12px 0; }
+  button { background:var(--ink); color:#fff; border:0; border-radius:8px; padding:10px 18px; font-size:15px; cursor:pointer; }
+  button.secondary { background:#fff; color:var(--ink); border:1px solid var(--line); }
+  select, input[type=file] { font-size:14px; }
+  .summary { background:#fff; border:1px solid var(--line); border-radius:8px; padding:14px; margin-top:18px; }
+  .finding { background:#fff; border:1px solid var(--line); border-left:5px solid var(--low); border-radius:8px; padding:12px 14px; margin:10px 0; }
+  .finding.high { border-left-color:var(--high); } .finding.medium { border-left-color:var(--med); }
+  .sev { font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; }
+  .high .sev { color:var(--high); } .medium .sev { color:var(--med); } .low .sev { color:var(--low); }
+  .finding h3 { font-size:16px; margin:2px 0 6px; }
+  .finding p { margin:4px 0; font-size:14px; }
+  code.ex { display:block; white-space:pre-wrap; word-break:break-word; background:var(--bg); border-radius:6px; padding:6px 8px; font-size:12px; margin-top:6px; }
+  ul.check { padding-left:20px; } ul.check li { margin:6px 0; }
+  .clean { color:var(--ok); font-weight:600; }
+  footer { margin-top:40px; font-size:13px; color:var(--muted); border-top:1px solid var(--line); padding-top:14px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Skill File Checker</h1>
+  <p class="lead">Paste an AI skill, rule or instruction file (SKILL.md, AGENTS.md, CLAUDE.md, .cursorrules) and get a plain-English list of things worth checking before you use it.</p>
+  <div class="note"><strong>Private by design.</strong> Everything runs in your browser. Nothing you paste is uploaded, stored or sent anywhere, and this page is locked so it cannot connect to the internet. <strong>It is a first check, not a guarantee:</strong> a clean result does not mean a file is safe.</div>
+
+  <h2>1. Your file</h2>
+  <textarea id="src" spellcheck="false" placeholder="Paste the full text of the file here, including the part between --- lines at the top if there is one."></textarea>
+  <div class="row">
+    <label>Or open a file from your computer: <input type="file" id="file" accept=".md,.mdc,.txt,.cursorrules,text/*"></label>
+  </div>
+  <div class="row">
+    <label>Which tool will you use it in?
+      <select id="tool">
+        <option value="claude">Claude (app or Claude Code)</option>
+        <option value="cursor">Cursor</option>
+        <option value="codex">Codex</option>
+        <option value="other">Other or not sure</option>
+      </select>
+    </label>
+    <button id="run">Check the file</button>
+    <button id="clear" class="secondary">Clear</button>
+  </div>
+
+  <div id="out"></div>
+
+  <footer>
+    Provided as is, without warranty. Suggestions for improvement are welcome: open an issue on the project's GitHub page.
+    For developers, dedicated scanners such as skilldoctor and SkillSpector offer deeper, automated checks.
+    Open source under the MIT licence.
+  </footer>
+</main>
+
+<script>
+"use strict";
+// Each rule: what to look for, how serious it is, and what it means in plain English.
+const RULES = [
+  { id:"override", sev:"high", title:"Tries to override your instructions",
+    re:/\b(ignore|disregard|forget|override)\b[^\n]{0,40}\b(previous|prior|earlier|above|all|other|user'?s?|system)\b[^\n]{0,25}\b(instructions?|prompts?|rules?|guidelines?|messages?)/gi,
+    why:"Text like this is the classic sign of prompt injection: it asks the assistant to drop the rules you set.",
+    todo:"Do not use the file unless you understand exactly why this line is there." },
+  { id:"ai_addressed", sev:"medium", title:"Speaks directly to the AI",
+    re:/\b(if you are an? (ai|llm|language model|assistant|agent)|(any|all|every) (ai|llm|model|assistant|agent)s? (reading|that reads|processing)|note to (the )?(ai|llm|assistant|model))\b/gi,
+    why:"Files written for people do not usually address the AI reading them. Sometimes it is harmless guidance, sometimes it is an attempt to steer the assistant behind your back.",
+    todo:"Read the surrounding text and decide whether you would be happy for the assistant to follow it." },
+  { id:"authority", sev:"high", title:"Claims special authority",
+    re:/\b(you are now|from now on,? you|developer mode|admin(istrator)? (mode|override)|system override|highest priority|overrides? (all|any|default|system)|takes? precedence over)\b/gi,
+    why:"A file cannot have more authority than you. Claims like this try to put the file above your own instructions.",
+    todo:"Treat as a red flag. Remove the line or do not use the file." },
+  { id:"hide", sev:"high", title:"Asks to hide something from you",
+    re:/\b((do not|don'?t|never)\s+(tell|inform|mention|reveal|show|notify)\s+(the\s+)?user|without (telling|informing|notifying) (the )?user|silently|quietly)\b/gi,
+    why:"Anything that should happen without your knowledge is a serious warning sign.",
+    todo:"Do not use the file until you know what it wants to hide and why." },
+  { id:"consent", sev:"high", title:"Removes confirmation steps",
+    re:/((do not|don'?t|never|without)\s+(ask(ing)?|wait(ing)?|request(ing)?)\s+(for\s+)?(permission|confirmation|approval)|skip(ping)? (the )?confirm\w*|auto-?approve|--dangerously-skip-permissions|bypassPermissions|\byolo\b)/gi,
+    why:"Confirmation prompts are your main safety net. Without them, any instruction the assistant picks up, including a malicious one from a web page, can run unchecked.",
+    todo:"Keep confirmations on in your tool, whatever the file says." },
+  { id:"network", sev:"medium", title:"Sends or fetches data over the internet",
+    re:/\b(curl|wget|Invoke-WebRequest|fetch\(|requests\.(get|post)|axios|XMLHttpRequest|webhooks?|ngrok|pastebin|hooks\.slack\.com|discord(app)?\.com\/api\/webhooks|requestbin|pipedream)\b/gi,
+    why:"A skill that talks to the internet can send your files or details somewhere else. Many legitimate tools do this, so the question is whether this one needs to.",
+    todo:"Check every web address and ask why it is there. A writing or research skill rarely needs to send data out." },
+  { id:"install", sev:"medium", title:"Installs or runs software",
+    re:/(curl[^\n|]*\|\s*(ba|z)?sh|irm[^\n|]*\|\s*iex|\b(pip3? install|npm (i|install)|npx |brew install|apt(-get)? install|go install|cargo install|uvx )\b)/gi,
+    why:"Installing software through an AI skill gives that software the same access you have.",
+    todo:"Install anything yourself, from the official source, only if you need it." },
+  { id:"secrets", sev:"medium", title:"Mentions passwords, keys or private files",
+    re:/(~\/\.ssh|id_rsa|id_ed25519|\.aws\/credentials|\.env\b|api[_-]?key|secret[_-]?key|access[_-]?token|password|keychain)/gi,
+    why:"Combined with internet access, reading these is how data theft usually works.",
+    todo:"Never run a file like this in a project that contains real keys or passwords." },
+  { id:"persist", sev:"medium", title:"Changes settings that last beyond this session",
+    re:/(CLAUDE\.md|AGENTS\.md|\.cursorrules|settings\.json|SessionStart|session start|on every session|memory file|crontab|launchctl|startup script)/gi,
+    why:"A file that edits your configuration, memory or start-up hooks can keep influencing the assistant long after you stop using it.",
+    todo:"Only allow changes to these files when you have read exactly what will be written." },
+  { id:"pressure", sev:"low", title:"Pressures the assistant",
+    re:/\b(never (say|admit|tell)[^\n]{0,20}(impossible|can'?t|cannot)|always (comply|agree)|you must never refuse|do not refuse)\b/gi,
+    why:"Pushing the assistant to never refuse or never admit limits makes it more likely to do things it should not, or to make things up.",
+    todo:"Be sceptical of results produced under this kind of instruction." },
+  { id:"html_comment", sev:"medium", title:"Contains hidden comments",
+    re:/<!--[\s\S]{0,2000}?-->/g,
+    why:"Comments do not show when the file is displayed, but the AI still reads them. They are a common place to hide instructions.",
+    todo:"Read every comment shown below." },
+  { id:"blob", sev:"medium", title:"Contains long encoded text",
+    re:/[A-Za-z0-9+\/]{120,}={0,2}/g,
+    why:"Long strings of random-looking characters can hide instructions or code that you cannot read.",
+    todo:"Remove anything you cannot explain." }
+];
+const HIDDEN = /[​-‏‪-‮⁠-⁤﻿]|[\u{E0000}-\u{E007F}]/gu;
+
+function esc(s){ return s.replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function lineOf(text, idx){ return text.slice(0, idx).split("\n").length; }
+function snippet(text, idx, len){
+  const s = Math.max(0, idx - 60), e = Math.min(text.length, idx + len + 60);
+  return (s>0?"…":"") + text.slice(s, e).replace(HIDDEN, m => "[hidden U+" + m.codePointAt(0).toString(16).toUpperCase() + "]") + (e<text.length?"…":"");
+}
+
+function frontmatterTools(text){
+  const fm = text.match(/^---\s*\n([\s\S]*?)\n---/);
+  if (!fm) return null;
+  const m = fm[1].match(/^(allowed-tools|tools)\s*:\s*(.+)$/mi);
+  return m ? m[2] : "";
+}
+
+function check(text){
+  const findings = [];
+  for (const r of RULES){
+    const hits = [...text.matchAll(r.re)].slice(0, 3);
+    if (hits.length) findings.push({ ...r, ex: hits.map(h => "Line " + lineOf(text, h.index) + ": " + snippet(text, h.index, h[0].length)), count:[...text.matchAll(r.re)].length });
+  }
+  const hidden = [...text.matchAll(HIDDEN)];
+  if (hidden.length){
+    findings.push({ id:"hidden", sev:"high", title:"Contains invisible characters", count:hidden.length,
+      why:"Invisible characters can hide text from you while the AI still reads it. They also turn up harmlessly when text is copied from websites.",
+      todo:"Look at where they appear below. If they sit inside words or sentences rather than near emoji or links, treat the file as unsafe.",
+      ex: hidden.slice(0,3).map(h => "Line " + lineOf(text, h.index) + ": " + snippet(text, h.index, 1)) });
+  }
+  const tools = frontmatterTools(text);
+  if (tools !== null && tools !== ""){
+    if (/(^|[\s,\[])\*($|[\s,\]])|\ball\b/i.test(tools))
+      findings.push({ id:"wildcard", sev:"high", title:"Asks for every tool", count:1,
+        why:"A skill should only get the tools its job needs. Asking for all of them is like an app asking for every permission on your phone.",
+        todo:"Edit the tool list down to what the task needs, or do not use the skill.", ex:["Tools requested: " + tools] });
+    else if (/\b(Bash|Shell|WebFetch|WebSearch|Write|Edit|computer)\b/i.test(tools))
+      findings.push({ id:"powerful_tools", sev:"medium", title:"Asks for powerful tools", count:1,
+        why:"Running commands, writing files or reaching the internet are powerful. Check they fit what the skill says it does.",
+        todo:"If the skill only gives advice or writes text, it should not need these.", ex:["Tools requested: " + tools] });
+  }
+  const order = { high:0, medium:1, low:2 };
+  return findings.sort((a,b) => order[a.sev] - order[b.sev]);
+}
+
+const SETTINGS = {
+  claude: [
+    "Keep permission prompts on. Never start Claude Code with --dangerously-skip-permissions.",
+    "Only give a skill the tools it needs, and check its allowed-tools line before installing it.",
+    "Try new files in a separate project or folder with no passwords, keys or personal files.",
+    "Read any code the assistant writes before you run it."
+  ],
+  cursor: [
+    "Keep auto-run off so commands need your approval.",
+    "Check rules files (.cursor/rules, .cursorrules) after installing anything, and read what they say.",
+    "Try new files in a separate project with no passwords, keys or personal files.",
+    "Read any code the assistant writes before you run it."
+  ],
+  codex: [
+    "Keep approval prompts on and avoid full-auto modes for anything you have not reviewed.",
+    "Keep the sandbox enabled and network access off unless the task needs it.",
+    "Try new files in a separate project with no passwords, keys or personal files.",
+    "Read any code the assistant writes before you run it."
+  ],
+  other: [
+    "Keep confirmation prompts on and avoid any 'auto' or 'skip approval' mode.",
+    "Only give the assistant the tools and internet access the task needs.",
+    "Try new files in a separate project with no passwords, keys or personal files.",
+    "Read any code the assistant writes before you run it."
+  ]
+};
+
+function render(text, tool){
+  const out = document.getElementById("out");
+  if (!text.trim()){ out.innerHTML = '<div class="summary">Paste a file first.</div>'; return; }
+  if (text.length > 2000000){ out.innerHTML = '<div class="summary">That text is over 2 MB. Check the file in smaller parts.</div>'; return; }
+  const f = check(text);
+  const n = { high:0, medium:0, low:0 }; f.forEach(x => n[x.sev]++);
+  let html = '<h2>2. What we found</h2><div class="summary">';
+  html += f.length
+    ? "<strong>" + f.length + " thing" + (f.length>1?"s":"") + " to check</strong>: " + n.high + " high, " + n.medium + " medium, " + n.low + " low. High means read it carefully before using the file."
+    : '<span class="clean">Nothing on our list was found.</span> That does not prove the file is safe: read it yourself, and keep the settings below in place.';
+  html += "</div>";
+  for (const x of f){
+    html += '<div class="finding ' + x.sev + '"><div class="sev">' + x.sev + (x.count>1? " · found " + x.count + " times":"") + '</div><h3>' + esc(x.title) + '</h3><p><strong>Why it matters:</strong> ' + esc(x.why) + '</p><p><strong>What to do:</strong> ' + esc(x.todo) + '</p>' + x.ex.map(e => '<code class="ex">' + esc(e) + '</code>').join("") + '</div>';
+  }
+  html += '<h2>3. Settings that protect you either way</h2><ul class="check">' + SETTINGS[tool].map(s => "<li>" + esc(s) + "</li>").join("") + "</ul>";
+  html += '<div class="note">What this check cannot see: scripts or files the skill downloads later, behaviour that only appears when it runs, and new tricks it has no pattern for.</div>';
+  out.innerHTML = html;
+}
+
+document.getElementById("run").addEventListener("click", () => render(document.getElementById("src").value, document.getElementById("tool").value));
+document.getElementById("clear").addEventListener("click", () => { document.getElementById("src").value=""; document.getElementById("out").innerHTML=""; document.getElementById("file").value=""; });
+document.getElementById("file").addEventListener("change", e => {
+  const file = e.target.files[0]; if (!file) return;
+  if (file.size > 2_000_000){ alert("That file is larger than 2 MB. Paste the text instead."); return; }
+  const r = new FileReader(); r.onload = () => { document.getElementById("src").value = r.result; }; r.readAsText(file);
+});
+</script>
+</body>
+</html>
