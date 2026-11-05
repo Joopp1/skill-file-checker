@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- No network access: this page cannot load or send anything. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; form-action 'none'; base-uri 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'none'; form-action 'none'; base-uri 'none'">
 <meta name="referrer" content="no-referrer">
 <title>Skill File Checker</title>
 <style>
@@ -22,28 +22,33 @@
   button.secondary { background:#fff; color:var(--ink); border:1px solid var(--line); }
   select, input[type=file] { font-size:14px; }
   .summary { background:#fff; border:1px solid var(--line); border-radius:8px; padding:14px; margin-top:18px; }
+  .verdict { font-size:18px; font-weight:700; margin-bottom:4px; }
+  .verdict.high { color:var(--high); } .verdict.medium { color:var(--med); } .verdict.ok { color:var(--ok); }
   .finding { background:#fff; border:1px solid var(--line); border-left:5px solid var(--low); border-radius:8px; padding:12px 14px; margin:10px 0; }
   .finding.high { border-left-color:var(--high); } .finding.medium { border-left-color:var(--med); }
   .sev { font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; }
   .high .sev { color:var(--high); } .medium .sev { color:var(--med); } .low .sev { color:var(--low); }
+  .ref { font-size:12px; color:var(--muted); }
   .finding h3 { font-size:16px; margin:2px 0 6px; }
   .finding p { margin:4px 0; font-size:14px; }
   code.ex { display:block; white-space:pre-wrap; word-break:break-word; background:var(--bg); border-radius:6px; padding:6px 8px; font-size:12px; margin-top:6px; }
   ul.check { padding-left:20px; } ul.check li { margin:6px 0; }
-  .clean { color:var(--ok); font-weight:600; }
+  details { margin-top:24px; } summary { cursor:pointer; font-weight:600; }
+  table.cov { border-collapse:collapse; width:100%; font-size:13px; margin-top:8px; background:#fff; }
+  table.cov td, table.cov th { border:1px solid var(--line); padding:6px 8px; text-align:left; vertical-align:top; }
   footer { margin-top:40px; font-size:13px; color:var(--muted); border-top:1px solid var(--line); padding-top:14px; }
 </style>
 </head>
 <body>
 <main>
   <h1>Skill File Checker</h1>
-  <p class="lead">Paste an AI skill, rule or instruction file (SKILL.md, AGENTS.md, CLAUDE.md, .cursorrules) and get a plain-English list of things worth checking before you use it.</p>
-  <div class="note"><strong>Private by design.</strong> Everything runs in your browser. Nothing you paste is uploaded, stored or sent anywhere, and this page is locked so it cannot connect to the internet. <strong>It is a first check, not a guarantee:</strong> a clean result does not mean a file is safe.</div>
+  <p class="lead">Paste an AI skill, rule or instruction file (SKILL.md, AGENTS.md, CLAUDE.md, .cursorrules, README set-up guides) and get a plain-English list of things worth checking before you or your assistant follow it.</p>
+  <div class="note"><strong>Private by design.</strong> Everything runs in your browser. Nothing you paste is uploaded, stored or sent anywhere, and this page is locked so it cannot connect to the internet. <strong>It is a first check, not a guarantee:</strong> it matches known patterns, so a clean result does not mean a file is safe.</div>
 
   <h2>1. Your file</h2>
   <textarea id="src" spellcheck="false" placeholder="Paste the full text of the file here, including the part between --- lines at the top if there is one."></textarea>
   <div class="row">
-    <label>Or open a file from your computer: <input type="file" id="file" accept=".md,.mdc,.txt,.cursorrules,text/*"></label>
+    <label>Or open a file from your computer: <input type="file" id="file" accept=".md,.mdc,.txt,.cursorrules,.json,.yaml,.yml,text/*"></label>
   </div>
   <div class="row">
     <label>Which tool will you use it in?
@@ -51,6 +56,7 @@
         <option value="claude">Claude (app or Claude Code)</option>
         <option value="cursor">Cursor</option>
         <option value="codex">Codex</option>
+        <option value="openclaw">OpenClaw or another agent</option>
         <option value="other">Other or not sure</option>
       </select>
     </label>
@@ -60,163 +66,445 @@
 
   <div id="out"></div>
 
+  <details>
+    <summary>What this checker looks for, and how it maps to OWASP</summary>
+    <div id="coverage"></div>
+  </details>
+
   <footer>
     Provided as is, without warranty. Suggestions for improvement are welcome: open an issue on the project's GitHub page.
-    For developers, dedicated scanners such as skilldoctor and SkillSpector offer deeper, automated checks.
+    For developers, dedicated scanners such as Snyk's mcp-scan, skilldoctor and SkillSpector offer deeper, automated checks, including behaviour at run time.
+    References: OWASP Agentic Skills Top 10 (AST), OWASP Top 10 for LLM Applications 2025 (LLM), OWASP Top 10 for Agentic Applications (ASI).
     Open source under the MIT licence.
   </footer>
 </main>
 
 <script>
 "use strict";
-// Each rule: what to look for, how serious it is, and what it means in plain English.
-const RULES = [
-  { id:"override", sev:"high", title:"Tries to override your instructions",
-    re:/\b(ignore|disregard|forget|override)\b[^\n]{0,40}\b(previous|prior|earlier|above|all|other|user'?s?|system)\b[^\n]{0,25}\b(instructions?|prompts?|rules?|guidelines?|messages?)/gi,
-    why:"Text like this is the classic sign of prompt injection: it asks the assistant to drop the rules you set.",
-    todo:"Do not use the file unless you understand exactly why this line is there." },
-  { id:"ai_addressed", sev:"medium", title:"Speaks directly to the AI",
-    re:/\b(if you are an? (ai|llm|language model|assistant|agent)|(any|all|every) (ai|llm|model|assistant|agent)s? (reading|that reads|processing)|note to (the )?(ai|llm|assistant|model))\b/gi,
-    why:"Files written for people do not usually address the AI reading them. Sometimes it is harmless guidance, sometimes it is an attempt to steer the assistant behind your back.",
-    todo:"Read the surrounding text and decide whether you would be happy for the assistant to follow it." },
-  { id:"authority", sev:"high", title:"Claims special authority",
-    re:/\b(you are now|from now on,? you|developer mode|admin(istrator)? (mode|override)|system override|highest priority|overrides? (all|any|default|system)|takes? precedence over)\b/gi,
-    why:"A file cannot have more authority than you. Claims like this try to put the file above your own instructions.",
-    todo:"Treat as a red flag. Remove the line or do not use the file." },
-  { id:"hide", sev:"high", title:"Asks to hide something from you",
-    re:/\b((do not|don'?t|never)\s+(tell|inform|mention|reveal|show|notify)\s+(the\s+)?user|without (telling|informing|notifying) (the )?user|silently|quietly)\b/gi,
-    why:"Anything that should happen without your knowledge is a serious warning sign.",
-    todo:"Do not use the file until you know what it wants to hide and why." },
-  { id:"consent", sev:"high", title:"Removes confirmation steps",
-    re:/((do not|don'?t|never|without)\s+(ask(ing)?|wait(ing)?|request(ing)?)\s+(for\s+)?(permission|confirmation|approval)|skip(ping)? (the )?confirm\w*|auto-?approve|--dangerously-skip-permissions|bypassPermissions|\byolo\b)/gi,
-    why:"Confirmation prompts are your main safety net. Without them, any instruction the assistant picks up, including a malicious one from a web page, can run unchecked.",
-    todo:"Keep confirmations on in your tool, whatever the file says." },
-  { id:"network", sev:"medium", title:"Sends or fetches data over the internet",
-    re:/\b(curl|wget|Invoke-WebRequest|fetch\(|requests\.(get|post)|axios|XMLHttpRequest|webhooks?|ngrok|pastebin|hooks\.slack\.com|discord(app)?\.com\/api\/webhooks|requestbin|pipedream)\b/gi,
-    why:"A skill that talks to the internet can send your files or details somewhere else. Many legitimate tools do this, so the question is whether this one needs to.",
-    todo:"Check every web address and ask why it is there. A writing or research skill rarely needs to send data out." },
-  { id:"install", sev:"medium", title:"Installs or runs software",
-    re:/(curl[^\n|]*\|\s*(ba|z)?sh|irm[^\n|]*\|\s*iex|\b(pip3? install|npm (i|install)|npx |brew install|apt(-get)? install|go install|cargo install|uvx )\b)/gi,
-    why:"Installing software through an AI skill gives that software the same access you have.",
-    todo:"Install anything yourself, from the official source, only if you need it." },
-  { id:"secrets", sev:"medium", title:"Mentions passwords, keys or private files",
-    re:/(~\/\.ssh|id_rsa|id_ed25519|\.aws\/credentials|\.env\b|api[_-]?key|secret[_-]?key|access[_-]?token|password|keychain)/gi,
-    why:"Combined with internet access, reading these is how data theft usually works.",
-    todo:"Never run a file like this in a project that contains real keys or passwords." },
-  { id:"persist", sev:"medium", title:"Changes settings that last beyond this session",
-    re:/(CLAUDE\.md|AGENTS\.md|\.cursorrules|settings\.json|SessionStart|session start|on every session|memory file|crontab|launchctl|startup script)/gi,
-    why:"A file that edits your configuration, memory or start-up hooks can keep influencing the assistant long after you stop using it.",
-    todo:"Only allow changes to these files when you have read exactly what will be written." },
-  { id:"pressure", sev:"low", title:"Pressures the assistant",
-    re:/\b(never (say|admit|tell)[^\n]{0,20}(impossible|can'?t|cannot)|always (comply|agree)|you must never refuse|do not refuse)\b/gi,
-    why:"Pushing the assistant to never refuse or never admit limits makes it more likely to do things it should not, or to make things up.",
-    todo:"Be sceptical of results produced under this kind of instruction." },
-  { id:"html_comment", sev:"medium", title:"Contains hidden comments",
-    re:/<!--[\s\S]{0,2000}?-->/g,
-    why:"Comments do not show when the file is displayed, but the AI still reads them. They are a common place to hide instructions.",
-    todo:"Read every comment shown below." },
-  { id:"blob", sev:"medium", title:"Contains long encoded text",
-    re:/[A-Za-z0-9+\/]{120,}={0,2}/g,
-    why:"Long strings of random-looking characters can hide instructions or code that you cannot read.",
-    todo:"Remove anything you cannot explain." }
-];
-const HIDDEN = /[​-‏‪-‮⁠-⁤﻿]|[\u{E0000}-\u{E007F}]/gu;
+// ---------------------------------------------------------------------------
+// Each rule: what to look for, how serious it is, what it means in plain English,
+// and where it sits in the OWASP lists. All patterns are bounded to avoid slow matching.
+// ---------------------------------------------------------------------------
+const DOT = "(?:\\.|\\[\\.\\]|\\(\\.\\))";
+const PASTE_SITES = "glot\\.io|pastebin\\.com|paste\\.ee|hastebin|ghostbin|rentry\\.(co|org)|controlc\\.com|privatebin|dpaste|termbin\\.com|ix\\.io|0x0\\.st|transfer\\.sh|file\\.io|catbox\\.moe|anonfiles|gofile\\.io|mega\\.nz|temp\\.sh|bashupload|pastes\\.dev|justpaste\\.it";
+const CATCHERS = "webhook\\.site|requestbin|pipedream\\.net|requestcatcher|beeceptor|hookbin|ngrok(-free)?\\.(io|app)|trycloudflare\\.com|serveo\\.net|loca\\.lt|localtunnel|interact\\.sh|oast\\.(fun|pro|me|site|live)|burpcollaborator|canarytokens|hooks\\.slack\\.com|discord(app)?\\.com\\/api\\/webhooks|api\\.telegram\\.org\\/bot";
+const SHORTENERS = "bit\\.ly|tinyurl\\.com|t\\.co\\/|is\\.gd|cutt\\.ly|rebrand\\.ly|shorturl\\.at|tiny\\.cc|ow\\.ly|buff\\.ly|rb\\.gy";
 
-function esc(s){ return s.replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
-function lineOf(text, idx){ return text.slice(0, idx).split("\n").length; }
+const RULES = [
+  // ---- Prompt injection and authority ----
+  { id:"override", group:"Takes control of the assistant", sev:"high", title:"Tries to override your instructions",
+    re:/\b(ignore|disregard|forget|override|bypass)\b[^\n]{0,40}\b(previous|prior|earlier|above|all|other|user'?s?|system|safety|security)\b[^\n]{0,25}\b(instructions?|prompts?|rules?|guidelines?|messages?|policies|polic(y|ies)|guardrails?|restrictions?)/gi,
+    why:"This is the classic sign of prompt injection: it asks the assistant to drop the rules you or the tool set.",
+    todo:"Do not use the file unless you understand exactly why this line is there.", ref:"LLM01 · ASI01 · AST01" },
+  { id:"fake_consent", group:"Takes control of the assistant", sev:"high", title:"Claims you have already agreed",
+    re:/\b(the user (has )?already (approved|authori[sz]ed|consented|agreed|confirmed)|the user (has )?(approved|authori[sz]ed|consented to) (all|every|any)|(you|i) (have|has|already have) (been given |been granted )?(full |explicit |blanket )?(permission|authori[sz]ation|consent) to|pre-?(approved|authori[sz]ed) (by the user|for (all|any|every))|no need to (ask|check|confirm) (with )?the user|this (is|has been) (an )?(authori[sz]ed|approved|official) (request|instruction|action))\b/gi,
+    why:"A file cannot give consent on your behalf. Claiming you already agreed is a common way to get an assistant to skip its checks.",
+    todo:"Treat as a red flag. Your tool's own permission prompts are the only consent that counts.", ref:"LLM01 · ASI09 · AST01" },
+  { id:"authority", group:"Takes control of the assistant", sev:"high", title:"Claims special authority",
+    re:/\b(you are now (in|an? unrestricted|free|jailbroken|no longer)|developer mode|god mode|jailbreak|DAN mode|admin(istrator)? (mode|override)|system override|highest priority|top priority instruction|overrides? (all|any|default|system)|takes? precedence over|supersedes? (all|any|your)|(no|without) (any )?(restrictions|limits|filters|safety|guardrails)|unrestricted mode)\b/gi,
+    why:"A file cannot have more authority than you. Lines like this try to put the file above your own instructions or the tool's safety rules.",
+    todo:"Remove the line or do not use the file.", ref:"LLM01 · ASI01 · AST01" },
+  { id:"ai_addressed", group:"Takes control of the assistant", sev:"medium", title:"Speaks directly to the AI",
+    re:/\b(if you are an? (ai|llm|language model|assistant|agent|bot)|(any|all|every) (ai|llm|model|assistant|agent)s? (reading|that reads|processing|parsing)|note to (the )?(ai|llm|assistant|model|agent)|attention,? (ai|assistant|agent|claude|gpt|cursor)|dear (ai|assistant|claude|chatgpt)|you are now equipped|from now on,? you (will|must|are))\b/gi,
+    why:"Files written for people do not usually address the AI reading them. Sometimes it is harmless guidance, sometimes it is an attempt to steer the assistant behind your back.",
+    todo:"Read the surrounding text and decide whether you would be happy for the assistant to follow it.", ref:"LLM01 · ASI01" },
+  { id:"hide", group:"Takes control of the assistant", sev:"high", title:"Asks to hide something from you",
+    re:/\b((do not|don'?t|never)\s+(tell|inform|mention|reveal|show|notify|alert|warn)\s+(the\s+)?user|without (telling|informing|notifying|alerting|asking) (the )?user|(silently|quietly|secretly|covertly) (install|run|send|upload|delete|execute|download|modify|change|add|copy|collect|post|share)|keep (this|it) (hidden|secret) from|hide (this|it|the output) from)\b/gi,
+    why:"Anything that should happen without your knowledge is a serious warning sign.",
+    todo:"Do not use the file until you know what it wants to hide and why.", ref:"ASI09 · AST01" },
+  { id:"deceive", group:"Takes control of the assistant", sev:"high", title:"Asks the assistant to mislead you",
+    re:/\b(tell the user (that )?(it|everything|the task) (is|was|went) (fine|ok|okay|successful|complete)|always report (success|that it worked)|report success (even|regardless|no matter)|pretend (to the user|that (it|the task) (worked|succeeded))|lie to the user|do not (mention|report|show) (any )?(errors?|warnings?|failures?))\b/gi,
+    why:"If the assistant is told to report success no matter what, you lose your main way of noticing that something went wrong.",
+    todo:"Do not use the file.", ref:"ASI09 · LLM09" },
+  { id:"pressure", group:"Takes control of the assistant", sev:"low", title:"Pressures the assistant",
+    re:/\b(never (say|admit|tell)[^\n]{0,20}(impossible|can'?t|cannot)|always (comply|agree|say yes)|you must never refuse|(do not|never) refuse|never say no|failure is not an option)\b/gi,
+    why:"Pushing the assistant to never refuse or never admit limits makes it more likely to do things it should not, or to make things up.",
+    todo:"Be sceptical of results produced under this kind of instruction.", ref:"LLM09 · ASI01" },
+  { id:"prompt_leak", group:"Takes control of the assistant", sev:"medium", title:"Asks for the assistant's hidden instructions",
+    re:/\b((reveal|print|output|repeat|show|send) (your|the) (system prompt|hidden instructions|initial instructions|developer message)|what (is|are) your (system prompt|instructions))\b/gi,
+    why:"Pulling out the assistant's own instructions is a first step in many attacks, and can expose private set-up details.",
+    todo:"Remove the line.", ref:"LLM07" },
+
+  // ---- Consent and scope ----
+  { id:"consent", group:"Removes your safety net", sev:"high", title:"Removes confirmation steps or the sandbox",
+    re:/((do not|don'?t|never|without)\s+(ask(ing)?|wait(ing)?|request(ing)?|prompt(ing)?)\s+(the user\s+)?(for\s+)?(permission|confirmation|approval|consent)|skip(ping)? (the |all )?(confirm\w*|approval|permission)|auto-?(approve|accept|confirm|run)|--dangerously-skip-permissions|--dangerously-bypass-approvals-and-sandbox|bypassPermissions|--yolo\b|\byolo mode\b|full-auto|approval[_-]?policy\s*[=:]\s*["']?never|--no-sandbox|sandbox\s*[=:]\s*["']?(false|off|none|danger-full-access)|disable (the )?sandbox)/gi,
+    why:"Confirmation prompts and the sandbox are your main safety net. Without them, any instruction the assistant picks up, including a malicious one from a web page, runs unchecked.",
+    todo:"Keep confirmations and the sandbox on in your tool, whatever the file says.", ref:"LLM06 · AST03 · AST06 · ASI02" },
+  { id:"broad_scope", group:"Removes your safety net", sev:"medium", title:"Reaches beyond the project folder",
+    re:/(\b(read|scan|search|list|index|walk|crawl|upload|copy|cat|open)\b[^\n]{0,25}(~\/?(\s|$|\*|Documents|Desktop|Downloads|Library|Pictures)|\$HOME\b|%USERPROFILE%|C:\\Users\\)|\/etc\/(passwd|shadow|hosts|sudoers)|\b(entire|whole) (home (folder|directory)|disk|drive|file ?system|computer)|\ball (files|folders|directories) on (the|your) (computer|machine|system)|\brecursively (search|scan|list|read)[^\n]{0,30}(home|~|\/))/gi,
+    why:"A skill for one project should not need your home folder or system files. Reaching outside the project is how private files get read.",
+    todo:"Run the skill in a folder that contains only what it needs.", ref:"LLM06 · AST03 · ASI03" },
+  { id:"privilege", group:"Removes your safety net", sev:"medium", title:"Asks for administrator rights",
+    re:/(\bsudo\s+[a-z]|run (it |this )?as (an )?administrator|\brunas\b|chmod\s+(-R\s+)?(777|\+s|u\+s)|--privileged\b|Start-Process[^\n]{0,60}-Verb\s+RunAs)/gi,
+    why:"Administrator rights let software change anything on your computer, including its security settings.",
+    todo:"Never give a skill administrator rights. Install anything that needs them yourself, from the official source.", ref:"ASI03 · AST03 · AST06" },
+  { id:"acts_for_you", group:"Removes your safety net", sev:"medium", title:"Acts on your behalf",
+    re:/\b(send (an? )?(email|e-mail|message|dm|text|sms)|post (it |this )?(to|on) (slack|teams|twitter|x\.com|linkedin|facebook|discord|reddit)|make (a )?payment|transfer (funds|money|crypto|tokens|btc|eth|sol)|place (an? )?(order|trade)|git push( --force| -f)?|publish (to|on) (npm|pypi)|npm publish|create (a )?pull request|merge (the|this) (pr|pull request))\b/gi,
+    why:"Sending, posting, paying or publishing cannot be taken back. A skill should ask you first every time.",
+    todo:"Make sure your tool asks before each of these actions.", ref:"LLM06 · ASI02 · ASI09" },
+
+  // ---- Delivery of malware (ClawHavoc-style) ----
+  { id:"prereq", group:"Delivers software or malware", sev:"medium", title:"Asks you to install or run something first",
+    re:/(\bprerequisites?\b[\s\S]{0,300}?\b(download|paste|copy and paste|terminal|powershell|\.zip|\.exe|\.dmg|run (this|the following))\b|\bbefore (you )?(use|using|install(ing)?|run(ning)?|start(ing)?)[^\n]{0,40}\b(install|download|run|execute|paste)|\b(paste|copy)[^\n]{0,40}\binto (your |the |a )?(terminal|powershell|command prompt|cmd|shell|console)|\bopen (the |your |a )?(terminal|powershell|command prompt)[^\n]{0,30}\b(paste|run|type)|\brun the following (command|script)|\brequired (helper|agent|component|dependency|driver|plugin) (must|needs to) be installed|\bwill not work (unless|until) you (install|download|run))/gi,
+    why:"In February 2026 researchers found hundreds of fake skills whose 'Prerequisites' section told people to download a file or paste a command into Terminal. That step installed a password stealer. Legitimate skills can have prerequisites too, so check where they point.",
+    todo:"Never paste a command or download a file because a skill file told you to. Install tools yourself from their official website.", ref:"AST01 · AST02 · LLM03 · ASI04" },
+  { id:"download_exec", group:"Delivers software or malware", sev:"high", title:"Downloads a program or archive",
+    re:/(\b(download|grab|save)[^\n]{0,80}\.(zip|7z|rar|dmg|pkg|exe|msi|scr|vbs|jar|appimage|apk)\b|https?:\/\/[^\s)"'<>]{1,200}\.(zip|7z|rar|dmg|pkg|exe|msi|scr|vbs|jar|appimage|apk)\b|\b(archive|zip|file) password\b|\bpassword[- ]protected (archive|zip|file)\b|\b(extract|unzip|open) (it )?with (the )?password\b)/gi,
+    why:"A skill is text. If it needs you to download a program, that program can do anything you can do. Password-protected archives are a common trick to stop antivirus scanning them.",
+    todo:"Do not download it. If you need the tool, get it from the developer's official site.", ref:"AST01 · AST02 · ASI05" },
+  { id:"security_off", group:"Delivers software or malware", sev:"high", title:"Turns off security protection",
+    re:/(xattr\s+-(d|c|cr)\b[^\n]{0,40}(quarantine)?|spctl\s+--master-disable|csrutil\s+disable|Set-MpPreference[^\n]{0,40}-Disable|Add-MpPreference[^\n]{0,40}-Exclusion|-ExecutionPolicy\s+(Bypass|Unrestricted)|Set-ExecutionPolicy\s+(Bypass|Unrestricted)|\b(disable|turn off|deactivate|pause)\s+(your |the )?(antivirus|anti-virus|defender|windows defender|firewall|gatekeeper|xprotect|edr|endpoint protection|smartscreen)\b|ufw\s+disable|setenforce\s+0)/gi,
+    why:"Removing the quarantine flag, disabling Gatekeeper or Defender, or bypassing the execution policy are standard steps in malware installs.",
+    todo:"Do not use the file. Legitimate tools do not need your protection switched off.", ref:"AST01 · ASI05" },
+  { id:"decode_exec", group:"Delivers software or malware", sev:"high", title:"Decodes and runs hidden code",
+    re:/(base64\s+(-d|--decode|-D)[^\n]{0,40}\|\s*(ba|z)?sh|\|\s*base64\s+(-d|--decode|-D)|echo\s+["']?[A-Za-z0-9+\/=]{40,}["']?\s*\|\s*(base64|xxd)|FromBase64String|-e(nc|ncodedcommand)\s+[A-Za-z0-9+\/=]{20,}|\b(eval|exec)\s*\(\s*(atob|base64|decode|bytes\.fromhex|zlib|marshal)|\bInvoke-Expression\b|\biex\s*\(|\bpython3?\s+-c\s+["'][^\n]{0,40}(base64|exec|urllib|socket)|\$\(\s*(curl|wget)\b)/gi,
+    why:"Code that is decoded and run on the spot is written so that neither you nor a scanner can read what it does.",
+    todo:"Do not run it. Treat the file as unsafe.", ref:"AST01 · AST08 · ASI05" },
+  { id:"install", group:"Delivers software or malware", sev:"medium", title:"Installs or runs software",
+    re:/(curl[^\n|]{0,200}\|\s*(sudo\s+)?(ba|z)?sh|wget[^\n|]{0,200}\|\s*(sudo\s+)?(ba|z)?sh|irm[^\n|]{0,200}\|\s*iex|\b(pip3? install|pipx install|npm (i|install)|npx\s|pnpm (add|dlx)|yarn (add|dlx)|bunx\s|brew install|apt(-get)? install|go install|cargo install|uvx\s|gem install|choco install|winget install)\b)/gi,
+    why:"Installing software through an AI skill gives that software the same access you have.",
+    todo:"Install anything yourself, from the official source, only if you need it.", ref:"LLM03 · AST02 · ASI05" },
+  { id:"unpinned", group:"Delivers software or malware", sev:"low", title:"Always pulls the latest version",
+    re:/(@latest\b|npx\s+-y\b|--yes\b[^\n]{0,20}npx|pip3? install\s+(-U\s+)?git\+https?|\/(main|master|HEAD)\/[^\s]{0,80}\.(sh|py|js|ps1|md)\b|auto-?update(r|s)?\b)/gi,
+    why:"Whatever you reviewed today can be swapped for something else tomorrow if the skill always fetches the newest version.",
+    todo:"Pin to a specific version you have checked.", ref:"AST07 · AST02" },
+
+  // ---- Data theft ----
+  { id:"secret_words", group:"Can steal your data", sev:"low", title:"Mentions passwords or keys",
+    re:/\b(passwords?|api[_ -]?keys?|secret[_-]?keys?|access[_-]?tokens?|cookies|credentials)\b/gi,
+    why:"Many legitimate files mention these. It matters when the same file also reaches the internet or asks to read them.",
+    todo:"Check what the file wants done with them.", ref:"LLM02" },
+  { id:"secrets", group:"Can steal your data", sev:"medium", title:"Points to private files or wallets",
+    re:/(~\/\.ssh|\bid_(rsa|ed25519|ecdsa|dsa)\b|authorized_keys|\.aws\/credentials|\.config\/gcloud|\.azure\/|\.kube\/config|\.docker\/config\.json|\.npmrc|\.pypirc|\.netrc|\.git-credentials|\.gnupg|\.env\b|\bkeychain\b|login\.keychain|Login Data|Local State|wallet\.dat|\bkeystore\b|seed phrase|recovery phrase|mnemonic|private keys?\b|metamask|phantom wallet|exodus|electrum|1password|bitwarden|lastpass|printenv|\benv\s*\||process\.env|os\.environ|\.clawdbot|\.openclaw)/gi,
+    why:"Combined with internet access, reading these is how data theft usually works. Saved browser passwords, crypto wallets and SSH keys were the main targets of the 2026 fake-skill campaigns.",
+    todo:"Never run a file like this in a project or account that contains real keys, passwords or wallets.", ref:"LLM02 · AST01 · AST03" },
+  { id:"collect", group:"Can steal your data", sev:"high", title:"Gathers private information",
+    re:/\b(collect|gather|harvest|scrape|enumerate|dump|grab|extract|search (for|through)|look for|find all)\b[^\n]{0,40}\b(credentials|passwords?|(access|auth|api|session|bearer|oauth|refresh) tokens?|api keys?|secrets?|cookies|wallets?|seed phrases?|private keys?|ssh keys|email addresses|contacts|browser (data|history|profiles?)|\.env files?)\b/gi,
+    why:"A skill rarely has a good reason to go looking for your credentials, contacts or browser data.",
+    todo:"Do not use the file.", ref:"LLM02 · AST01 · ASI02" },
+  { id:"exfil", group:"Can steal your data", sev:"high", title:"Sends data somewhere else",
+    re:/(\b(send|upload|post|forward|exfiltrate|transmit|beacon|copy|mirror)\b[^\n]{0,50}\b(to|at)\b[^\n]{0,20}(https?:\/\/(?!localhost|127\.|0\.0\.0\.0|\[::1\])|webhooks?\b|telegram|discord|an? (email address|external (server|address|url))|my (server|endpoint|email))|curl\s[^\n]{0,120}(-d\b|--data|-F\b|--form|-T\b|--upload-file|-X\s*POST)[^\n]{0,160}https?:\/\/(?!localhost|127\.|0\.0\.0\.0)|curl\s[^\n]{0,40}https?:\/\/(?!localhost|127\.|0\.0\.0\.0)[^\n]{0,160}(-d\b|--data|-F\b|--form|-T\b|--upload-file|-X\s*POST)|\b(nc|ncat|netcat)\s+-[a-z]*\s|\bscp\s+[^\n]{0,80}@|\brsync\s+[^\n]{0,80}@|Invoke-RestMethod[^\n]{0,60}-Method\s+Post)/gi,
+    why:"Sending files or details to an outside address is how stolen data leaves your computer.",
+    todo:"Check every destination. If you cannot explain why your data goes there, do not use the file.", ref:"LLM02 · AST01 · ASI02" },
+  { id:"img_leak", group:"Can steal your data", sev:"high", title:"Builds web links from your data",
+    re:/(!\[[^\]\n]{0,100}\]\(\s*https?:\/\/[^)\s]{1,200}(\?|&)[^)\s]{0,200}(\{|\$|<|%7B|\[)|<img[^>\n]{0,200}src=["']?https?:\/\/[^"'\s>]{1,200}(\?|&)[^"'\s>]{0,200}(\{|\$|<|%7B)|\b(append|add|include|encode|put)\b[^\n]{0,40}\b(to|in|into)\b[^\n]{0,20}\b(the )?(url|link|query string|image (url|link|src))\b)/gi,
+    why:"An image or link whose address is filled in with your data leaks that data the moment the assistant or your app loads it. No click is needed.",
+    todo:"Do not use the file.", ref:"LLM02 · LLM05 · AST01" },
+  { id:"hardcoded_secret", group:"Can steal your data", sev:"medium", title:"Contains what looks like a real key",
+    re:/(\bAKIA[0-9A-Z]{16}\b|\bghp_[A-Za-z0-9]{36}\b|\bgithub_pat_[A-Za-z0-9_]{40,}|\bsk-ant-[A-Za-z0-9_-]{20,}|\bsk-(proj-)?[A-Za-z0-9]{20,}|\bxox[baprs]-[A-Za-z0-9-]{10,}|\bAIza[0-9A-Za-z_-]{35}\b|-----BEGIN (RSA |OPENSSH |EC |DSA |PGP )?PRIVATE KEY-----)/g,
+    why:"A real key inside a shared file is either a leak or a way to make your assistant use the author's account, which the author can watch.",
+    todo:"Do not use keys from a file. If it is yours, revoke it now.", ref:"AST01 · LLM02" },
+
+  // ---- Network ----
+  { id:"paste_site", group:"Connects to the internet", sev:"high", title:"Points to a paste or file-sharing site",
+    re:new RegExp("\\b(" + PASTE_SITES.replace(/\\\./g, DOT) + ")\\b", "gi"),
+    why:"Paste and file-sharing sites let anyone host a script and change it at any time. The 2026 fake-skill campaign hosted its install script on one.",
+    todo:"Do not run anything hosted there. Legitimate tools publish on their own site or an official package registry.", ref:"AST02 · AST05 · ASI04" },
+  { id:"catcher", group:"Connects to the internet", sev:"high", title:"Points to a data-collection service",
+    re:new RegExp("\\b(" + CATCHERS.replace(/\\\./g, DOT) + ")", "gi"),
+    why:"These services exist to receive data from elsewhere. In a skill file they are a common way to collect what was taken.",
+    todo:"Do not use the file unless you set this up yourself.", ref:"LLM02 · AST01" },
+  { id:"raw_ip", group:"Connects to the internet", sev:"high", title:"Points to a bare internet address",
+    re:/\b(?!(?:127|10|0)\.)(?!192\.168\.)(?!172\.(?:1[6-9]|2\d|3[01])\.)(?!169\.254\.)(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.|\[\.\])(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.|\[\.\])(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.|\[\.\])(?:25[0-5]|2[0-4]\d|1?\d?\d)\b(?!\.\d)/g,
+    filter: m => m[0].replace(/\[\.\]/g, ".").split(".").some(o => +o >= 32),
+    why:"Legitimate services use names, not raw numbers. Bare addresses are typical of attacker servers. The 2026 fake-skill campaign used one.",
+    todo:"Do not use the file unless you know exactly what is at that address.", ref:"AST01 · ASI04" },
+  { id:"raw_code", group:"Connects to the internet", sev:"medium", title:"Runs code straight from a raw file link",
+    re:/\b(raw\.githubusercontent\.com|gist\.githubusercontent\.com|gist\.github\.com|bitbucket\.org\/[^\s]{1,80}\/raw\/|gitlab\.com\/[^\s]{1,80}\/-\/raw\/)/gi,
+    why:"Raw file links are used by legitimate installers, but whoever controls the repository can change the file at any time.",
+    todo:"Prefer an official installer or package, pinned to a version you have checked.", ref:"AST02 · AST07" },
+  { id:"shortener", group:"Connects to the internet", sev:"medium", title:"Uses a link shortener",
+    re:new RegExp("\\b(" + SHORTENERS.replace(/\\\./g, DOT) + ")", "gi"),
+    why:"A shortened link hides where it really goes, and the destination can be changed later.",
+    todo:"Expand the link with a link-checking service before trusting it, or ask for the full address.", ref:"AST05" },
+  { id:"defanged", group:"Connects to the internet", sev:"low", title:"Contains disguised web addresses",
+    re:/(\bhxxps?:\/\/|\w\[\.\]\w|\[dot\]|\(dot\))/gi,
+    why:"Security reports write addresses like this so they cannot be clicked. In a skill file it may be quoting an attack, or trying to slip an address past a filter.",
+    todo:"Check why it is there.", ref:"AST08" },
+  { id:"network", group:"Connects to the internet", sev:"medium", title:"Sends or fetches data over the internet",
+    re:/\b(curl|wget|Invoke-WebRequest|Invoke-RestMethod|fetch\(|requests\.(get|post|put)|httpx\.|urllib|axios|XMLHttpRequest|WebSocket|socket\.connect|webhooks?|ngrok)\b/gi,
+    why:"A skill that talks to the internet can send your files or details somewhere else. Many legitimate tools do this, so the question is whether this one needs to.",
+    todo:"Check every web address and ask why it is there. A writing or research skill rarely needs to send data out.", ref:"LLM06 · AST03 · ASI02" },
+  { id:"remote_instr", group:"Connects to the internet", sev:"high", title:"Loads its real instructions from somewhere else",
+    re:/(\b(fetch|load|read|download|get|pull|retrieve|import|check)\b[^\n]{0,30}\b(the )?(latest|updated|current|full|real|actual|remote|new)?\s?(instructions|rules|prompts?|config(uration)?|skill|guidelines|directives|commands)\b[^\n]{0,20}\b(from|at)\b[^\n]{0,10}(https?:\/\/|the (url|link|server|web))|\bfollow (the )?(instructions|steps|rules)[^\n]{0,20}\b(at|from|in|on)\b[^\n]{0,10}https?:\/\/)/gi,
+    why:"If the real instructions live on a website, the file you checked can look clean while the author changes what your assistant does at any time. Snyk found this in 2.9% of skills it scanned.",
+    todo:"Do not use the file. Ask for a version with all instructions written inside it.", ref:"AST05 · AST07 · LLM01" },
+  { id:"backdoor", group:"Connects to the internet", sev:"high", title:"Opens remote access to your computer",
+    re:/(\/dev\/tcp\/|\bbash\s+-i\b[^\n]{0,20}>&|\bnc(at)?\s+[^\n]{0,40}-e\s|\bsocat\b[^\n]{0,60}(exec|pty)|\bmkfifo\b|\bssh\s+[^\n]{0,40}-R\s+\d|>>\s*~?\/?\.ssh\/authorized_keys|reverse shell|bind shell|\bmeterpreter\b|\bcobalt ?strike\b)/gi,
+    why:"These are standard ways to let someone else control your computer from outside.",
+    todo:"Do not use the file. If you have already run it, disconnect from the internet and get help.", ref:"AST01 · ASI05" },
+
+  // ---- Persistence and memory ----
+  { id:"persist", group:"Stays after you stop using it", sev:"medium", title:"Changes settings that last beyond this session",
+    re:/(\b(write|add|append|insert|edit|modify|update|overwrite|replace|create|change)\b[^\n]{0,40}(CLAUDE\.md|AGENTS\.md|GEMINI\.md|\.cursorrules|\.cursor\/rules|settings(\.local)?\.json|\.mcp\.json|memory)|mcpServers|claude mcp add|\b(SessionStart|UserPromptSubmit|PreToolUse|PostToolUse|Stop) hook|\bhooks?\s*:|on every session|at the start of every (session|conversation)|crontab|launchctl|LaunchAgents|LaunchDaemons|systemctl enable|\.(bashrc|zshrc|bash_profile|profile|zprofile)\b|\$PROFILE|Microsoft\.PowerShell_profile|schtasks|\\CurrentVersion\\Run|Startup folder|\.git\/hooks|pre-commit hook)/gi,
+    why:"A file that edits your configuration, start-up files or hooks can keep influencing the assistant, or your computer, long after you stop using it.",
+    todo:"Only allow changes to these files when you have read exactly what will be written.", ref:"ASI06 · AST03 · AST09" },
+  { id:"memory", group:"Stays after you stop using it", sev:"high", title:"Writes itself into the assistant's memory",
+    re:/\b(remember (this|these|that)[^\n]{0,20}(forever|permanently|for all future|in (all )?future)|(add|save|write|store) (this|these|the following)[^\n]{0,30}(to|in|into) (your )?(long-term )?memory|in (all|every) future (sessions?|conversations?|chats?)|always do this (from now on|in future))\b/gi,
+    why:"Instructions saved to memory keep steering the assistant in every future session, even after you delete the file.",
+    todo:"Do not let it write to memory. Check your assistant's memory settings afterwards.", ref:"ASI06 · LLM04" },
+  { id:"spread", group:"Stays after you stop using it", sev:"high", title:"Tries to copy itself into other work",
+    re:/\b((include|insert|copy|add|embed|append) (this|these|the following) (text|instructions?|block|section|prompt)[^\n]{0,40}(every|all|each|any) (file|output|response|commit|document|repo|repository|message|agent)|(pass|forward|give) (these|this|the same) (instructions?|prompt)[^\n]{0,20}(to )?(other|any|sub-?)\s?agents?|tell (other|all|any) (agents?|assistants?|models?) to)\b/gi,
+    why:"Instructions that copy themselves into new files, commits or other agents spread like a worm and are hard to remove.",
+    todo:"Do not use the file.", ref:"ASI07 · ASI08 · AST01" },
+  { id:"branding", group:"Stays after you stop using it", sev:"low", title:"Adds content to everything you produce",
+    re:/\b(add|include|insert|append|put)\b[^\n]{0,30}\b(footer|header|signature|credit|attribution|watermark|backlink|link to|logo|banner|promo(tion)?|advert)\b[^\n]{0,30}\b(every|all|each|any)\b/gi,
+    why:"A skill that stamps its own branding or links into every file you make is putting the author's content in your work.",
+    todo:"Remove the line unless you want it.", ref:"LLM05 · LLM09" },
+
+  // ---- Destructive and covering tracks ----
+  { id:"destructive", group:"Can cause damage", sev:"high", title:"Can delete or overwrite a lot at once",
+    re:/(\brm\s+-[a-z]*r[a-z]*\s+(\/(\s|$|\*)|~\/?(\s|$|\*)|\$HOME\/?(\s|$|\*)|\*|\.\s|\.\/\*)|\bdel\s+\/[sq]\s|\bRemove-Item[^\n]{0,40}-Recurse[^\n]{0,20}-Force|\bformat\s+[a-z]:|\bmkfs(\.\w+)?\s|\bdd\s+if=|\bshred\s|git\s+push\s+(--force|-f)\b|git\s+reset\s+--hard|git\s+clean\s+-[a-z]*f|\bDROP\s+(TABLE|DATABASE|SCHEMA)\b|\bTRUNCATE\s+TABLE\b|:\(\)\s*\{\s*:\|:&\s*\};:)/gi,
+    why:"Commands like these delete files, wipe drives or rewrite history in one go, often with no way back.",
+    todo:"Never let a skill run these without you reading the exact command first.", ref:"LLM06 · ASI02 · AST01" },
+  { id:"cover_tracks", group:"Can cause damage", sev:"high", title:"Covers its tracks",
+    re:/(\bhistory\s+-c\b|unset\s+HISTFILE|HISTFILE=\/dev\/null|\b(clear|wipe|erase|delete|remove|purge)\s+(the|all|your|any)\s+(logs|log files|history|shell history|audit trail|evidence|traces)\b|wevtutil\s+cl\b|Clear-EventLog|rm\s+[^\n]{0,30}\.(bash|zsh)_history)/gi,
+    why:"Erasing history or logs only makes sense if someone does not want you to find out what happened.",
+    todo:"Do not use the file.", ref:"AST01 · ASI10" },
+
+  // ---- Hidden content and tricks ----
+  { id:"html_comment", group:"Hides content from you", sev:"medium", title:"Contains hidden comments",
+    re:/<!--[\s\S]{0,2000}?-->|^\s{0,3}\[\/\/\]:\s*#\s*\(.{0,500}\)|^\s{0,3}\[comment\]:\s*<>\s*\(.{0,500}\)/gm,
+    why:"Comments do not show when the file is displayed, but the AI still reads them. They are a common place to hide instructions.",
+    todo:"Read every comment shown below.", ref:"LLM01 · AST04 · AST08" },
+  { id:"hidden_html", group:"Hides content from you", sev:"high", title:"Uses formatting to hide text",
+    re:/(display\s*:\s*none|visibility\s*:\s*hidden|font-size\s*:\s*0|opacity\s*:\s*0(\.0+)?\s*[;"']|color\s*:\s*(white|#fff\b|#ffffff\b|transparent)|<(span|div|p)[^>\n]{0,80}\bhidden\b|height\s*:\s*0(px)?\s*;[^\n]{0,40}overflow\s*:\s*hidden)/gi,
+    why:"Text styled to be invisible is shown to the AI but not to you.",
+    todo:"Treat as a red flag and read the hidden part.", ref:"LLM01 · AST04 · AST08" },
+  { id:"blob", group:"Hides content from you", sev:"medium", title:"Contains long encoded text",
+    re:/([A-Za-z0-9+\/]{120,}={0,2}|(\\x[0-9a-fA-F]{2}){20,}|(%[0-9a-fA-F]{2}){20,}|(\\u[0-9a-fA-F]{4}){12,}|\b[0-9a-fA-F]{160,}\b|data:[a-z]+\/[a-z0-9.+-]+;base64,)/g,
+    why:"Long strings of random-looking characters can hide instructions or code that you cannot read.",
+    todo:"Remove anything you cannot explain.", ref:"AST08 · LLM01" },
+  { id:"impersonation", group:"Hides content from you", sev:"low", title:"Claims to be official or verified",
+    re:/\b((official|verified|certified|endorsed|approved) (by )?(anthropic|openai|claude|cursor|github|microsoft|google|openclaw|clawhub)|(anthropic|openai|github|openclaw)[- ](official|verified|approved)|by the (anthropic|openai|cursor|github) team)\b/gi,
+    why:"Anyone can write 'official' in a file. Fake skills often borrow a well-known name to look trustworthy.",
+    todo:"Check the claim on the company's own website or official repository.", ref:"AST01 · AST02 · ASI09" },
+  { id:"overclaim", group:"Hides content from you", sev:"low", title:"Makes claims that sound too good",
+    re:/\b(guaranteed (profit|returns?|income|results?|gains?)|(100|99)% (win rate|accuracy|success)|never loses|risk-?free (profit|returns?|trading)|get rich|passive income on autopilot|\d{3,}% (returns?|profit|gains?))\b/gi,
+    why:"Confident promises are a lure, and in trading or finance skills they can cost you money if you believe them.",
+    todo:"Test any claim yourself before relying on it.", ref:"LLM09" },
+  { id:"scripts", group:"Hides content from you", sev:"low", title:"Relies on scripts or files this check cannot see",
+    re:/(\b(scripts?|bin|tools|helpers?|lib)\/[\w.-]{1,60}\.(py|sh|js|ts|ps1|rb|pl|bat|cmd|mjs|cjs)\b|\b(run|execute|call|invoke)\b[^\n]{0,20}\b[\w.-]{1,60}\.(py|sh|js|ps1|rb|bat)\b)/gi,
+    why:"The skill runs its own scripts. Those can do things the text you pasted never mentions.",
+    todo:"Open and check every script it runs, or paste each one into this checker too.", ref:"AST08 · ASI05" }
+];
+
+// Invisible and direction-changing characters (escaped so the source itself stays readable).
+const HIDDEN = /[\u034F\u061C\u115F\u1160\u17B4\u17B5\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u206F\u3164\uFEFF\uFFA0]|[\u{E0000}-\u{E007F}]|[\u{E0100}-\u{E01EF}]/gu;
+const VARSEL = /[\uFE00-\uFE0F]/gu;  // variation selectors: usually emoji, flagged only in long runs
+const LOOKALIKE = /(?<![\p{L}])(?=[\p{L}]{0,40}[A-Za-z])(?=[\p{L}]{0,40}[\u0370-\u03FF\u0400-\u04FF\u0500-\u052F])[\p{L}]{4,40}(?![\p{L}])/gu;
+
+function esc(s){ return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function lineOf(text, idx){ let n = 1; for (let i = 0; i < idx; i++) if (text.charCodeAt(i) === 10) n++; return n; }
 function snippet(text, idx, len){
-  const s = Math.max(0, idx - 60), e = Math.min(text.length, idx + len + 60);
+  const s = Math.max(0, idx - 60), e = Math.min(text.length, idx + Math.min(len, 200) + 60);
   return (s>0?"…":"") + text.slice(s, e).replace(HIDDEN, m => "[hidden U+" + m.codePointAt(0).toString(16).toUpperCase() + "]") + (e<text.length?"…":"");
 }
+function lev(a, b){
+  if (Math.abs(a.length - b.length) > 2) return 9;
+  const d = Array.from({length:a.length+1}, (_, i) => [i]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++)
+    d[i][j] = Math.min(d[i-1][j]+1, d[i][j-1]+1, d[i-1][j-1] + (a[i-1]===b[j-1]?0:1));
+  return d[a.length][b.length];
+}
 
-function frontmatterTools(text){
-  const fm = text.match(/^---\s*\n([\s\S]*?)\n---/);
-  if (!fm) return null;
-  const m = fm[1].match(/^(allowed-tools|tools)\s*:\s*(.+)$/mi);
-  return m ? m[2] : "";
+function frontmatter(text){
+  const fm = text.match(/^\uFEFF?---\s*\r?\n([\s\S]{0,20000}?)\r?\n---/);
+  return fm ? fm[1] : null;
+}
+
+const KNOWN_NAMES = ["clawhub","openclaw","claude","anthropic","openai","cursor","github","copilot","codex","gemini","chatgpt","metamask","phantom","solana"];
+
+function checkMetadata(text, add){
+  const fm = frontmatter(text);
+  if (fm === null) return;
+  const tools = (fm.match(/^(allowed-tools|tools)\s*:\s*(.+)$/mi) || [])[2] || "";
+  if (tools){
+    if (/(^|[\s,\[])\*($|[\s,\]])|\ball\b|Bash\(\s*\*\s*\)|Bash\(\s*\)/i.test(tools))
+      add({ id:"wildcard", group:"Removes your safety net", sev:"high", title:"Asks for every tool", ref:"AST03 · LLM06 · ASI02",
+        why:"A skill should only get the tools its job needs. Asking for all of them is like an app asking for every permission on your phone.",
+        todo:"Edit the tool list down to what the task needs, or do not use the skill.", ex:["Tools requested: " + tools] });
+    else if (/\b(Bash|Shell|Terminal|WebFetch|WebSearch|Write|Edit|MultiEdit|computer|Browser)\b/i.test(tools))
+      add({ id:"powerful_tools", group:"Removes your safety net", sev:"medium", title:"Asks for powerful tools", ref:"AST03 · LLM06",
+        why:"Running commands, writing files or reaching the internet are powerful. Check they fit what the skill says it does.",
+        todo:"If the skill only gives advice or writes text, it should not need these.", ex:["Tools requested: " + tools] });
+  }
+  const desc = (fm.match(/^description\s*:\s*([\s\S]{0,5000}?)(?=^\w[\w-]*\s*:|$(?![\s\S]))/mi) || [])[1] || "";
+  if (desc.length > 1024 || /\b(ignore|always|never|must|you are|do not tell|without asking|https?:\/\/)\b/i.test(desc))
+    add({ id:"meta_desc", group:"Hides content from you", sev:"medium", title:"The description does more than describe", ref:"AST04 · LLM01",
+      why:"Assistants read a skill's description to decide when to use it, often before you see the rest. Instructions or links in the description act early and out of sight.",
+      todo:"The description should say what the skill does, in a sentence or two. Read it carefully.", ex:["description: " + desc.slice(0, 300) + (desc.length>300?"…":"")] });
+  if (/!!(python|js|ruby|perl|java|binary|str|map)|!<tag:|^\s*<<\s*:|:\s*&\w+\s*$|:\s*\*\w+\s*$/m.test(fm))
+    add({ id:"meta_yaml", group:"Hides content from you", sev:"high", title:"Unusual code-like settings in the header", ref:"AST04",
+      why:"YAML tags, anchors and merge keys in a skill header can make some tools run code or load hidden values when they read the file.",
+      todo:"Do not use the file in a tool you have not checked handles this safely.", ex:[fm.slice(0, 300)] });
+  if (/^(hooks|scripts|postinstall|preinstall|on_load|onLoad|startup|init|setup)\s*:/mi.test(fm))
+    add({ id:"meta_hooks", group:"Stays after you stop using it", sev:"medium", title:"Header asks to run something automatically", ref:"AST04 · ASI05",
+      why:"A header field that runs scripts or hooks can act as soon as the skill loads, before you ask it to do anything.",
+      todo:"Read what the hook runs before installing the skill.", ex:[fm.slice(0, 300)] });
+  const name = ((fm.match(/^name\s*:\s*["']?([^"'\n]+)/mi) || [])[1] || "").trim().toLowerCase();
+  if (name){
+    const parts = name.split(/[^a-z0-9]+/).filter(Boolean);
+    for (const p of parts) for (const k of KNOWN_NAMES)
+      if (p !== k && p.length >= 5 && !(p.length < k.length && k.startsWith(p)) && lev(p, k) <= (k.length > 6 ? 2 : 1)) {
+        add({ id:"typosquat", group:"Hides content from you", sev:"medium", title:"The name looks like an imitation", ref:"AST01 · AST02",
+          why:"Fake skills often use names one or two letters away from a well-known tool, so a quick glance or a typo installs the wrong one. The 2026 campaign used names like 'clawhubb' and 'cllawhub'.",
+          todo:"Check you have the exact name from the official source.", ex:["Skill name: " + name + " (close to '" + k + "')"] });
+        return;
+      }
+  }
 }
 
 function check(text){
   const findings = [];
+  const seen = new Set();
+  const add = f => { if (!seen.has(f.id)) { seen.add(f.id); findings.push({count:1, ...f}); } };
   for (const r of RULES){
-    const hits = [...text.matchAll(r.re)].slice(0, 3);
-    if (hits.length) findings.push({ ...r, ex: hits.map(h => "Line " + lineOf(text, h.index) + ": " + snippet(text, h.index, h[0].length)), count:[...text.matchAll(r.re)].length });
+    r.re.lastIndex = 0;
+    const all = [...text.matchAll(r.re)].filter(m => !r.filter || r.filter(m));
+    if (all.length) add({ ...r, ex: all.slice(0, 3).map(h => "Line " + lineOf(text, h.index) + ": " + snippet(text, h.index, h[0].length)), count: all.length });
   }
   const hidden = [...text.matchAll(HIDDEN)];
   if (hidden.length){
-    findings.push({ id:"hidden", sev:"high", title:"Contains invisible characters", count:hidden.length,
-      why:"Invisible characters can hide text from you while the AI still reads it. They also turn up harmlessly when text is copied from websites.",
+    const inWords = hidden.filter(h => /\w/.test(text[h.index-1] || "") && /\w/.test(text[h.index+h[0].length] || "")).length;
+    add({ id:"hidden", group:"Hides content from you", sev:"high", title:"Contains invisible characters", count:hidden.length, ref:"LLM01 · AST04 · AST08",
+      why:"Invisible characters can hide text from you while the AI still reads it, or flip the direction text is displayed. They also turn up harmlessly when text is copied from websites." + (inWords ? " Here " + inWords + " sit inside words, which is not normal copying." : ""),
       todo:"Look at where they appear below. If they sit inside words or sentences rather than near emoji or links, treat the file as unsafe.",
       ex: hidden.slice(0,3).map(h => "Line " + lineOf(text, h.index) + ": " + snippet(text, h.index, 1)) });
   }
-  const tools = frontmatterTools(text);
-  if (tools !== null && tools !== ""){
-    if (/(^|[\s,\[])\*($|[\s,\]])|\ball\b/i.test(tools))
-      findings.push({ id:"wildcard", sev:"high", title:"Asks for every tool", count:1,
-        why:"A skill should only get the tools its job needs. Asking for all of them is like an app asking for every permission on your phone.",
-        todo:"Edit the tool list down to what the task needs, or do not use the skill.", ex:["Tools requested: " + tools] });
-    else if (/\b(Bash|Shell|WebFetch|WebSearch|Write|Edit|computer)\b/i.test(tools))
-      findings.push({ id:"powerful_tools", sev:"medium", title:"Asks for powerful tools", count:1,
-        why:"Running commands, writing files or reaching the internet are powerful. Check they fit what the skill says it does.",
-        todo:"If the skill only gives advice or writes text, it should not need these.", ex:["Tools requested: " + tools] });
-  }
+  const vs = [...text.matchAll(/[\uFE00-\uFE0F]{4,}/gu)];
+  if (vs.length) add({ id:"varsel", group:"Hides content from you", sev:"high", title:"Contains strings of hidden selector characters", ref:"LLM01 · AST08",
+    why:"Long runs of invisible variation selectors can carry a hidden message that the AI can decode.", todo:"Treat the file as unsafe.",
+    ex: vs.slice(0,2).map(h => "Line " + lineOf(text, h.index)) });
+  const look = [...text.matchAll(LOOKALIKE)];
+  if (look.length) add({ id:"lookalike", group:"Hides content from you", sev:"medium", title:"Uses look-alike letters", count:look.length, ref:"AST01 · AST08",
+    why:"Words that mix Latin letters with Greek or Cyrillic ones look normal to you but read differently to a computer. It is a way to slip past filters or fake a name.",
+    todo:"Retype the word, or do not trust names and links in this file.", ex: look.slice(0,3).map(h => "Line " + lineOf(text, h.index) + ": " + h[0]) });
+  const longLine = text.split("\n").findIndex(l => l.length > 3000);
+  const padding = /[ \t]{300,}\S/.exec(text);
+  if (longLine >= 0 || padding) add({ id:"offscreen", group:"Hides content from you", sev:"medium", title:"Text may be pushed off-screen", ref:"AST08",
+    why:"Very long lines or hundreds of spaces can push instructions out of view in an editor, while the AI still reads them.",
+    todo:"Scroll to the end of the line shown below and read what is there.",
+    ex:[ padding ? "Line " + lineOf(text, padding.index) + ": large block of spaces followed by text" : "Line " + (longLine+1) + " is over 3,000 characters long" ] });
+  checkMetadata(text, add);
+
+  // Combinations that are more serious than their parts.
+  const has = id => seen.has(id);
+  if ((has("secrets") || has("collect")) && (has("exfil") || has("catcher") || has("img_leak") || has("raw_ip") || has("paste_site")))
+    add({ id:"combo_theft", group:"Combinations", sev:"high", title:"Can read your secrets and send them out", ref:"LLM02 · LLM06 · AST01",
+      why:"This file both touches private data and reaches the internet. That pairing, together with anything untrusted the assistant reads, is the recipe security researchers warn about most for AI agents.",
+      todo:"Only use it in an empty test project with no real keys, and with network access off.", ex:["See the separate findings above for the lines involved."] });
+  if (has("prereq") && (has("download_exec") || has("paste_site") || has("raw_ip") || has("decode_exec") || has("security_off") || has("shortener")))
+    add({ id:"combo_clawhavoc", group:"Combinations", sev:"high", title:"Matches a known fake-skill malware pattern", ref:"AST01 · AST02 · ASI04",
+      why:"A setup step that has you download, paste or run something, combined with a suspicious source, is the pattern used by the ClawHavoc campaign in February 2026, which installed a password stealer on users' computers.",
+      todo:"Do not follow the setup steps. Report the skill to the marketplace.", ex:["See the separate findings above for the lines involved."] });
+  if ((has("consent") || has("wildcard")) && (has("install") || has("network") || has("destructive") || has("exfil") || has("acts_for_you")))
+    add({ id:"combo_open_door", group:"Combinations", sev:"high", title:"Switches off your checks and grants powerful actions", ref:"LLM06 · LLM01 · AST03",
+      why:"On its own this file may do nothing harmful. But with confirmations off and powerful actions available, any prompt injection the assistant later reads, on a web page or in an email, can use them unchecked.",
+      todo:"Keep confirmations on and limit the tools, whatever the file says.", ex:["See the separate findings above for the lines involved."] });
+
   const order = { high:0, medium:1, low:2 };
-  return findings.sort((a,b) => order[a.sev] - order[b.sev]);
+  return findings.sort((a,b) => (a.group === "Combinations" ? -1 : 0) - (b.group === "Combinations" ? -1 : 0) || order[a.sev] - order[b.sev]);
+}
+
+const CRITICAL = new Set(["override","fake_consent","hide","deceive","download_exec","security_off","decode_exec","collect","exfil","img_leak","catcher","paste_site","remote_instr","backdoor","memory","spread","cover_tracks","hidden_html","varsel"]);
+function verdict(f){
+  const highs = f.filter(x => x.sev === "high").length;
+  if (f.some(x => x.group === "Combinations" || CRITICAL.has(x.id)) || highs >= 2) return { cls:"high", text:"Do not use this file until you have read every high finding." };
+  if (highs === 1 || f.some(x => x.sev === "medium")) return { cls:"medium", text:"Review the findings before you or your assistant follow this file." };
+  if (f.length) return { cls:"ok", text:"Only minor points found. Read them, and keep the settings below in place." };
+  return { cls:"ok", text:"Nothing on our list was found." };
 }
 
 const SETTINGS = {
   claude: [
     "Keep permission prompts on. Never start Claude Code with --dangerously-skip-permissions.",
     "Only give a skill the tools it needs, and check its allowed-tools line before installing it.",
-    "Try new files in a separate project or folder with no passwords, keys or personal files.",
+    "Never paste a command or download a file because a skill told you to. Install tools from their official site.",
+    "Try new files in a separate project or folder with no passwords, keys, wallets or personal files.",
     "Read any code the assistant writes before you run it."
   ],
   cursor: [
     "Keep auto-run off so commands need your approval.",
     "Check rules files (.cursor/rules, .cursorrules) after installing anything, and read what they say.",
+    "Never paste a command or download a file because a rules file told you to.",
     "Try new files in a separate project with no passwords, keys or personal files.",
     "Read any code the assistant writes before you run it."
   ],
   codex: [
     "Keep approval prompts on and avoid full-auto modes for anything you have not reviewed.",
     "Keep the sandbox enabled and network access off unless the task needs it.",
+    "Never paste a command or download a file because an instruction file told you to.",
     "Try new files in a separate project with no passwords, keys or personal files.",
     "Read any code the assistant writes before you run it."
+  ],
+  openclaw: [
+    "Install skills only from authors you can verify, and check the exact name for look-alikes.",
+    "Ignore any 'Prerequisites' step that asks you to download a file or paste a command into Terminal.",
+    "Run the agent on a machine or account with no saved passwords, wallets or SSH keys.",
+    "Keep the agent's network access and shell access as narrow as the task allows.",
+    "Report suspicious skills to the marketplace."
   ],
   other: [
     "Keep confirmation prompts on and avoid any 'auto' or 'skip approval' mode.",
     "Only give the assistant the tools and internet access the task needs.",
+    "Never paste a command or download a file because an instruction file told you to.",
     "Try new files in a separate project with no passwords, keys or personal files.",
     "Read any code the assistant writes before you run it."
   ]
 };
+
+function report(f, v){
+  return ["Skill File Checker report", v.text, ""].concat(f.map(x => "[" + x.sev.toUpperCase() + "] " + x.title + " (" + x.ref + ")\n  " + x.ex.join("\n  "))).join("\n");
+}
 
 function render(text, tool){
   const out = document.getElementById("out");
   if (!text.trim()){ out.innerHTML = '<div class="summary">Paste a file first.</div>'; return; }
   if (text.length > 2000000){ out.innerHTML = '<div class="summary">That text is over 2 MB. Check the file in smaller parts.</div>'; return; }
   const f = check(text);
+  const v = verdict(f);
   const n = { high:0, medium:0, low:0 }; f.forEach(x => n[x.sev]++);
-  let html = '<h2>2. What we found</h2><div class="summary">';
-  html += f.length
-    ? "<strong>" + f.length + " thing" + (f.length>1?"s":"") + " to check</strong>: " + n.high + " high, " + n.medium + " medium, " + n.low + " low. High means read it carefully before using the file."
-    : '<span class="clean">Nothing on our list was found.</span> That does not prove the file is safe: read it yourself, and keep the settings below in place.';
-  html += "</div>";
+  let html = '<h2>2. What we found</h2><div class="summary"><div class="verdict ' + v.cls + '">' + esc(v.text) + '</div>';
+  html += f.length ? f.length + " thing" + (f.length>1?"s":"") + " to check: " + n.high + " high, " + n.medium + " medium, " + n.low + " low."
+                   : "That does not prove the file is safe. Read it yourself, and keep the settings below in place.";
+  html += ' <button id="copy" class="secondary" style="margin-left:8px;padding:4px 10px;font-size:13px">Copy report</button></div>';
+  let group = "";
   for (const x of f){
-    html += '<div class="finding ' + x.sev + '"><div class="sev">' + x.sev + (x.count>1? " · found " + x.count + " times":"") + '</div><h3>' + esc(x.title) + '</h3><p><strong>Why it matters:</strong> ' + esc(x.why) + '</p><p><strong>What to do:</strong> ' + esc(x.todo) + '</p>' + x.ex.map(e => '<code class="ex">' + esc(e) + '</code>').join("") + '</div>';
+    if (x.group !== group){ group = x.group; html += '<h3 style="margin:18px 0 4px;font-size:15px">' + esc(group) + '</h3>'; }
+    html += '<div class="finding ' + x.sev + '"><div class="sev">' + x.sev + (x.count>1? " · found " + x.count + " times":"") + ' <span class="ref">' + esc(x.ref || "") + '</span></div><h3>' + esc(x.title) + '</h3><p><strong>Why it matters:</strong> ' + esc(x.why) + '</p><p><strong>What to do:</strong> ' + esc(x.todo) + '</p>' + x.ex.map(e => '<code class="ex">' + esc(e) + '</code>').join("") + '</div>';
   }
   html += '<h2>3. Settings that protect you either way</h2><ul class="check">' + SETTINGS[tool].map(s => "<li>" + esc(s) + "</li>").join("") + "</ul>";
-  html += '<div class="note">What this check cannot see: scripts or files the skill downloads later, behaviour that only appears when it runs, and new tricks it has no pattern for.</div>';
+  html += '<div class="note">What this check cannot see: scripts or files the skill downloads later, behaviour that only appears when it runs, changes the author makes after you checked, and new tricks it has no pattern for. Instructions written in ordinary language can also slip past any pattern list.</div>';
   out.innerHTML = html;
+  document.getElementById("copy").addEventListener("click", () => { navigator.clipboard && navigator.clipboard.writeText(report(f, v)); });
 }
 
-document.getElementById("run").addEventListener("click", () => render(document.getElementById("src").value, document.getElementById("tool").value));
-document.getElementById("clear").addEventListener("click", () => { document.getElementById("src").value=""; document.getElementById("out").innerHTML=""; document.getElementById("file").value=""; });
-document.getElementById("file").addEventListener("change", e => {
-  const file = e.target.files[0]; if (!file) return;
-  if (file.size > 2_000_000){ alert("That file is larger than 2 MB. Paste the text instead."); return; }
-  const r = new FileReader(); r.onload = () => { document.getElementById("src").value = r.result; }; r.readAsText(file);
-});
+function coverage(){
+  const rows = RULES.map(r => [r.group, r.title, r.ref]).concat([
+    ["Hides content from you","Contains invisible characters","LLM01 · AST04 · AST08"],
+    ["Hides content from you","Strings of hidden selector characters","LLM01 · AST08"],
+    ["Hides content from you","Uses look-alike letters","AST01 · AST08"],
+    ["Hides content from you","Text may be pushed off-screen","AST08"],
+    ["Removes your safety net","Asks for every tool / powerful tools (header)","AST03 · LLM06"],
+    ["Hides content from you","Description does more than describe; unusual YAML; auto-run hooks; imitation names (header)","AST04 · AST01"],
+    ["Combinations","Secrets plus internet; fake prerequisite plus suspicious source; checks off plus powerful actions","LLM02 · LLM06 · AST01 · AST03"]]);
+  return '<table class="cov"><tr><th>Group</th><th>Check</th><th>OWASP</th></tr>' + rows.map(r => "<tr><td>" + r.map(esc).join("</td><td>") + "</td></tr>").join("") + "</table>" +
+    '<p class="ref">Not covered, because no text check can: signing and provenance (AST01, AST02), what a skill does when it runs (AST06), changes after you checked (AST07), organisation-wide inventories (AST09).</p>';
+}
+
+if (typeof document !== "undefined" && document.getElementById("run")) {
+  document.getElementById("coverage").innerHTML = coverage();
+  document.getElementById("run").addEventListener("click", () => render(document.getElementById("src").value, document.getElementById("tool").value));
+  document.getElementById("clear").addEventListener("click", () => { document.getElementById("src").value=""; document.getElementById("out").innerHTML=""; document.getElementById("file").value=""; });
+  document.getElementById("file").addEventListener("change", e => {
+    const file = e.target.files[0]; if (!file) return;
+    if (file.size > 2_000_000){ alert("That file is larger than 2 MB. Paste the text instead."); return; }
+    const r = new FileReader(); r.onload = () => { document.getElementById("src").value = r.result; }; r.readAsText(file);
+  });
+}
+if (typeof module !== "undefined") module.exports = { check, verdict, RULES };
 </script>
 </body>
 </html>
