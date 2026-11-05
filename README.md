@@ -34,7 +34,7 @@ It reads text and matches patterns. It cannot see scripts a skill downloads late
 Files that document attacks, such as security guides, will trigger findings because they quote the patterns. Read the context.
 
 ## For developers
-Dedicated scanners go further, for example Snyk's mcp-scan, skilldoctor (command line, CI) and SkillSpector (static plus optional AI analysis).
+Dedicated open-source scanners go further, for example NVIDIA's SkillSpector and Cisco's skill-scanner (pattern, AI-judge and behavioural analysis).
 
 ## About
 Built by Joseph Majersky, who writes about AI safety and trust and safety on [LinkedIn](https://www.linkedin.com/in/josephmajersky).
