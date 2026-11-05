@@ -405,7 +405,9 @@ function check(text){
       todo:"Keep confirmations on and limit the tools, whatever the file says.", ex:["See the separate findings above for the lines involved."] });
 
   const order = { high:0, medium:1, low:2 };
-  return findings.sort((a,b) => (a.group === "Combinations" ? -1 : 0) - (b.group === "Combinations" ? -1 : 0) || order[a.sev] - order[b.sev]);
+  const rank = {};
+  for (const f of findings) rank[f.group] = Math.min(rank[f.group] ?? 9, f.group === "Combinations" ? -1 : order[f.sev]);
+  return findings.sort((a,b) => rank[a.group] - rank[b.group] || a.group.localeCompare(b.group) || order[a.sev] - order[b.sev]);
 }
 
 const CRITICAL = new Set(["override","fake_consent","hide","deceive","download_exec","security_off","decode_exec","collect","exfil","img_leak","catcher","paste_site","remote_instr","backdoor","memory","spread","cover_tracks","hidden_html","varsel"]);
